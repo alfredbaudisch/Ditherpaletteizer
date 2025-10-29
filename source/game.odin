@@ -718,8 +718,123 @@ create_palette :: proc(input_path: string) {
 	fmt.printf("Palette created: %s\n", output_path)
 }
 
+// Helper function to create masked image if mask is active
+// Returns the path to use (masked image path if mask was created, original path otherwise)
+// This makes masked areas transparent - inverse of export_masked_area
+create_masked_image_if_needed :: proc() -> (path: string, ok: bool) {
+	if !g.mask_active || g.mask_texture.id == 0 {
+		return g.image_path, true
+	}
+	
+	// Get base image name and directory
+	base_name := filepath.stem(g.image_path)
+	dir := filepath.dir(g.image_path)
+	ext := filepath.ext(g.image_path)
+	masked_path := fmt.tprintf("%s/%s_masked%s", dir, base_name, ext)
+	
+	// Load the original image
+	original_image := rl.LoadImage(strings.clone_to_cstring(g.image_path, context.temp_allocator))
+	if original_image.data == nil {
+		fmt.printf("Error: Failed to load original image\n")
+		return g.image_path, false
+	}
+	defer rl.UnloadImage(original_image)
+	
+	// Load the mask texture as an image
+	mask_image := rl.LoadImageFromTexture(g.mask_texture.texture)
+	if mask_image.data == nil {
+		fmt.printf("Error: Failed to load mask texture\n")
+		return g.image_path, false
+	}
+	defer rl.UnloadImage(mask_image)
+	
+	// Create a new image for the masked result (same size as original)
+	masked_image := rl.ImageCopy(original_image)
+	
+	// Get pixel data
+	orig_width := original_image.width
+	orig_height := original_image.height
+	mask_width := mask_image.width
+	mask_height := mask_image.height
+	
+	// Ensure dimensions match
+	if orig_width != mask_width || orig_height != mask_height {
+		fmt.printf("Error: Image and mask dimensions don't match\n")
+		rl.UnloadImage(masked_image)
+		return g.image_path, false
+	}
+	
+	// Access pixel data
+	total_pixels := i32(orig_width * orig_height)
+	orig_pixels := mem.slice_ptr(cast(^rl.Color)original_image.data, int(total_pixels))
+	mask_pixels := mem.slice_ptr(cast(^rl.Color)mask_image.data, int(total_pixels))
+	masked_pixels := mem.slice_ptr(cast(^rl.Color)masked_image.data, int(total_pixels))
+	
+	// Copy pixels from original, but make masked areas transparent
+	// If mask alpha > 0, it means we painted there, so make it transparent
+	for i in 0..<int(total_pixels) {
+		if mask_pixels[i].a > 0 {
+			// This area is masked - make it transparent
+			masked_pixels[i] = rl.Color{0, 0, 0, 0}
+		} else {
+			// Keep the original pixel
+			masked_pixels[i] = orig_pixels[i]
+		}
+	}
+	
+	// Export the masked image
+	output_path_cstring := strings.clone_to_cstring(masked_path, context.temp_allocator)
+	success := rl.ExportImage(masked_image, output_path_cstring)
+	rl.UnloadImage(masked_image)
+	
+	if !success {
+		fmt.printf("Error: Failed to export masked image\n")
+		return g.image_path, false
+	}
+	
+	fmt.printf("Masked image created: %s\n", masked_path)
+	return masked_path, true
+}
+
 create_palette_no_args :: proc() {
-	create_palette(g.image_path)
+	if g.image_path == "" {
+		return
+	}
+	
+	// Get base image name and directory for palette naming
+	base_name := filepath.stem(g.image_path)
+	dir := filepath.dir(g.image_path)
+	
+	// If mask is active, create masked image first and use that for palette generation
+	input_path := g.image_path
+	used_masked_image := false
+	if g.mask_active && g.mask_texture.id != 0 {
+		masked_path, ok := create_masked_image_if_needed()
+		if ok {
+			input_path = masked_path
+			used_masked_image = true
+		} else {
+			fmt.printf("Warning: Failed to create masked image, using original image for palette\n")
+		}
+	}
+	
+	create_palette(input_path)
+	
+	// If we used a masked image, the palette was created as _masked_palette.png
+	// Copy it to _palette.png so both exist
+	if used_masked_image {
+		masked_palette_path := fmt.tprintf("%s/%s_masked_palette.png", dir, base_name)
+		palette_path := fmt.tprintf("%s/%s_palette.png", dir, base_name)
+		
+		// Copy the masked palette to the regular palette name
+		copy_cmd := fmt.tprintf("cp \"%s\" \"%s\"", masked_palette_path, palette_path)
+		result := libc.system(strings.clone_to_cstring(copy_cmd, context.temp_allocator))
+		if result != 0 {
+			fmt.printf("Warning: Failed to copy masked palette to palette: exit code %d\n", result)
+		} else {
+			fmt.printf("Palette also saved as: %s\n", palette_path)
+		}
+	}
 }
 
 apply_effects :: proc() {
@@ -732,32 +847,11 @@ apply_effects :: proc() {
 	dir := filepath.dir(g.image_path)
 	ext := filepath.ext(g.image_path)
 	
-	input_image_path := g.image_path
-	mask_created_successfully := false
-	
 	// If mask is active, create masked image first (masked areas become transparent)
-	if g.mask_active && g.mask_texture.id != 0 {
-		// Export mask texture to temporary file
-		mask_path := fmt.tprintf("%s/%s_mask_temp.png", dir, base_name)
-		if !export_mask_texture(mask_path) {
-			fmt.printf("Error: Failed to export mask texture, proceeding without mask\n")
-		} else {
-			// Create masked image where masked areas are transparent
-			masked_path := fmt.tprintf("%s/%s_masked%s", dir, base_name, ext)
-			
-			// Use ffmpeg to apply mask: multiply original alpha with inverted mask alpha
-			command := fmt.tprintf("ffmpeg -y -i \"%s\" -i \"%s\" -filter_complex \"[0:v]alphaextract[orig_a];[1:v]alphaextract,negate[mask_a];[orig_a][mask_a]blend=all_mode=multiply[combined_a];[0:v][combined_a]alphamerge[masked]\" -pix_fmt rgba -map \"[masked]\" \"%s\"", g.image_path, mask_path, masked_path)
-			
-			result := libc.system(strings.clone_to_cstring(command, context.temp_allocator))
-			if result != 0 {
-				fmt.printf("Error running ffmpeg to apply mask: exit code %d\n", result)
-				fmt.printf("Proceeding with original image\n")
-			} else {
-				fmt.printf("Masked image created: %s\n", masked_path)
-				input_image_path = masked_path
-				mask_created_successfully = true
-			}
-		}
+	input_image_path, mask_created_successfully := create_masked_image_if_needed()
+	if !mask_created_successfully {
+		fmt.printf("Warning: Failed to create masked image, proceeding with original image\n")
+		input_image_path = g.image_path
 	}
 	
 	// If "Apply palette" is checked, create the palette AFTER mask is applied
