@@ -695,6 +695,18 @@ export_masked_area :: proc() {
 	}
 	
 	fmt.printf("Masked area exported to: %s\n", output_path)
+	
+	// Clean up intermediate file
+	delete_file_if_exists(mask_path)
+}
+
+// Helper function to delete a file if it exists
+delete_file_if_exists :: proc(file_path: string) {
+	delete_cmd := fmt.tprintf("rm -f \"%s\"", file_path)
+	result := libc.system(strings.clone_to_cstring(delete_cmd, context.temp_allocator))
+	if result != 0 {
+		fmt.printf("Warning: Failed to delete file %s: exit code %d\n", file_path, result)
+	}
 }
 
 create_palette :: proc(input_path: string) {
@@ -808,10 +820,12 @@ create_palette_no_args :: proc() {
 	// If mask is active, create masked image first and use that for palette generation
 	input_path := g.image_path
 	used_masked_image := false
+	masked_path := ""
 	if g.mask_active && g.mask_texture.id != 0 {
-		masked_path, ok := create_masked_image_if_needed()
+		masked_path_temp, ok := create_masked_image_if_needed()
 		if ok {
-			input_path = masked_path
+			input_path = masked_path_temp
+			masked_path = masked_path_temp
 			used_masked_image = true
 		} else {
 			fmt.printf("Warning: Failed to create masked image, using original image for palette\n")
@@ -834,6 +848,10 @@ create_palette_no_args :: proc() {
 		} else {
 			fmt.printf("Palette also saved as: %s\n", palette_path)
 		}
+		
+		// Clean up intermediate files
+		delete_file_if_exists(masked_palette_path)
+		delete_file_if_exists(masked_path)
 	}
 }
 
@@ -916,6 +934,21 @@ apply_effects :: proc() {
 	}
 	
 	fmt.printf("Effects applied: %s\n", output_path)
+	
+	// Clean up intermediate files if mask was used
+	if mask_created_successfully {
+		mask_temp_path := fmt.tprintf("%s/%s_mask_temp.png", dir, base_name)
+		delete_file_if_exists(mask_temp_path)
+		
+		// Delete the masked image file
+		masked_image_path := fmt.tprintf("%s/%s_masked%s", dir, base_name, ext)
+		delete_file_if_exists(masked_image_path)
+
+		if g.apply_palette_enabled {
+			masked_palette_path := fmt.tprintf("%s/%s_masked_palette.png", dir, base_name)
+			delete_file_if_exists(masked_palette_path)
+		}
+	}
 }
 
 draw_checkerboard :: proc(rect: rl.Rectangle) {
