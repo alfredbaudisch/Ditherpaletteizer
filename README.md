@@ -1,6 +1,6 @@
-# Odin + Raylib + Hot Reload template
+# Ditherpaletteizer for PS1 and N64 textures with Masking support
 
-A ffmpeg wrapper to palettize (posterize) and dither images. It's also possible to mask out areas. Useful to creating low-res textures for PS1 and N64 graphics and models. Written in Odin + Raylib.
+A small tool to palettize (posterize) and dither images. It's also possible to mask out areas. Useful to creating low-res textures for PS1 and N64 graphics and models. Written in Odin + Raylib.
 
 <img width="885" height="744" alt="SCR-20251029-qthe" src="https://github.com/user-attachments/assets/00d7b62a-fb96-427b-b31c-6621972fcae8" />
 
