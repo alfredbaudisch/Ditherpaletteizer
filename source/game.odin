@@ -1064,7 +1064,7 @@ draw :: proc() {
 		rl.DrawRectangleRoundedLines(create_palette_button, 0.3, 8, rl.WHITE)
 		
 		// Draw button text
-		create_palette_text := "Create Palette"
+		create_palette_text := "Export Palette"
 		create_palette_text_cstring := strings.clone_to_cstring(create_palette_text, context.temp_allocator)
 		create_palette_text_size := rl.MeasureText(create_palette_text_cstring, 20)
 		create_palette_text_x := create_palette_button.x + (create_palette_button.width - f32(create_palette_text_size)) / 2.0
